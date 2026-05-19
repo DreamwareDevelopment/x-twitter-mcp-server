@@ -6,6 +6,7 @@ from starlette.middleware.cors import CORSMiddleware
 
 from .server import server
 from .middleware import SmitheryConfigMiddleware
+from .path_token_middleware import from_env as path_token_from_env
 
 
 def _create_asgi_app() -> Any:
@@ -45,6 +46,10 @@ def _create_asgi_app() -> Any:
 
     # Inject Smithery config-per-request and map to env vars used by Tweepy setup
     app = SmitheryConfigMiddleware(app)
+
+    # Outermost gate: require MCP_ACCESS_TOKEN as the first path segment.
+    # Refuses to start if the env var is missing — secure by default.
+    app = path_token_from_env()(app)
     return app
 
 

@@ -1,0 +1,25 @@
+# flyctl launch added from .gitignore
+# Python
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/*.pyd
+**/.Python
+**/env
+**/venv
+**/.venv
+**/*.egg-info
+**/dist
+**/build
+
+# Environment
+**/.env
+
+# Dependency lock files
+**/uv.lock
+
+# IDE
+**/.idea
+
+**/.DS_Store
+fly.toml
