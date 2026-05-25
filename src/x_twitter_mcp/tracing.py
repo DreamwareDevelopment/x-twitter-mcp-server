@@ -310,9 +310,16 @@ class TraceContextMiddleware:
 
 class TracingMiddleware(Middleware):
     """FastMCP middleware that opens an ``mcp.<tool_name>`` span around each
-    ``tools/call``. Parent context is picked up from the active OTel context,
-    which ``TraceContextMiddleware`` sets at the HTTP layer by restoring the
-    traceparent injected into ``params._meta._otel_traceparent``.
+    ``tools/call``.
+
+    Parent context is read from the MCP SDK's ``request_ctx`` ContextVar, which
+    the MCP SDK sets (with the original ``params._meta``) inside the session
+    server task right before dispatching to any handler.  This bypasses the
+    FastMCP 3.3.1 server.py:955 bug where ``CallToolRequestParams`` is
+    reconstructed without ``_meta``, and also crosses the asyncio task
+    boundary created by ``StreamableHTTPSessionManager`` for stateful sessions
+    (where setting OTel context at the HTTP layer has no effect because the
+    server task was created during a prior request).
     """
 
     # on_call_tool is invoked for `tools/call` requests; everything else
@@ -321,7 +328,18 @@ class TracingMiddleware(Middleware):
         params = getattr(context, "message", None)
         tool_name = getattr(params, "name", "unknown") if params is not None else "unknown"
 
-        parent_ctx = otel_context.get_current()
+        # Read the original _meta that the MCP SDK stored in request_ctx.
+        # Falls back to current OTel context (a synthetic root) if request_ctx
+        # is not set (e.g. in unit tests or stateless mode pre-initialization).
+        traceparent: str | None = None
+        try:
+            from mcp.server.lowlevel.server import request_ctx as _mcp_request_ctx
+
+            traceparent = extract_traceparent_from_meta(_mcp_request_ctx.get().meta)
+        except Exception:
+            pass
+
+        parent_ctx = restore_parent_context(traceparent)
         tracer = get_tracer()
         span = tracer.start_span(
             f"mcp.{tool_name}",

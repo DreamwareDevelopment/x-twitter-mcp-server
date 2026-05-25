@@ -167,20 +167,24 @@ async def test_on_call_tool_records_exception(reset_exporter: InMemorySpanExport
 @pytest.mark.asyncio
 async def test_on_call_tool_propagates_traceparent(reset_exporter: InMemorySpanExporter):
     middleware = TracingMiddleware()
-    # TracingMiddleware now reads from otel_context.get_current(); the HTTP
-    # layer (TraceContextMiddleware) is responsible for attaching the parent.
+    # TracingMiddleware reads from the MCP SDK's request_ctx ContextVar.
+    # Simulate what the MCP SDK does inside the server task right before
+    # dispatching to the handler.
     ctx = _make_context("get_user_profile", traceparent=None)
 
     async def call_next(_: Any) -> Any:
         return None
 
-    # Simulate what TraceContextMiddleware does at the HTTP layer.
-    parent_ctx = restore_parent_context(VALID_TRACEPARENT)
-    token = otel_context.attach(parent_ctx)
+    from mcp.server.lowlevel.server import request_ctx as _mcp_request_ctx
+
+    class _MockRequestContext:
+        meta = _StubMeta(model_extra={"_otel_traceparent": VALID_TRACEPARENT})
+
+    token = _mcp_request_ctx.set(_MockRequestContext())
     try:
         await middleware.on_call_tool(ctx, call_next)
     finally:
-        otel_context.detach(token)
+        _mcp_request_ctx.reset(token)
 
     spans = reset_exporter.get_finished_spans()
     assert len(spans) == 1
