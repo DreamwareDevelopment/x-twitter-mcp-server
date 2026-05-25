@@ -292,7 +292,20 @@ class TraceContextMiddleware:
         parent_ctx = restore_parent_context(traceparent)
         token = otel_context.attach(parent_ctx)
 
-        # Replay the buffered body to the downstream ASGI app.
+        # Replay the buffered body to the downstream ASGI app, then delegate
+        # subsequent receive() calls to the underlying receive callable.
+        #
+        # FastMCP's streamable_http transport calls receive() a second time
+        # inside its response handler to watch for client disconnects mid-SSE.
+        # Returning a synthetic http.disconnect on the second call (the prior
+        # behavior) tricked FastMCP into aborting the response before sending
+        # the final body chunk — uvicorn then logged "ASGI callable returned
+        # without completing response" and Fly's proxy reported "could not
+        # finish reading HTTP body from instance", which Anthropic Managed
+        # Agents interpreted as "MCP server 'x' initialize failed: protocol
+        # error". Delegating to the real receive preserves the natural
+        # disconnect semantics: it blocks until the actual client drops, exactly
+        # what FastMCP needs.
         replayed = False
 
         async def replay_receive() -> dict[str, Any]:
@@ -300,7 +313,7 @@ class TraceContextMiddleware:
             if not replayed:
                 replayed = True
                 return {"type": "http.request", "body": body, "more_body": False}
-            return {"type": "http.disconnect"}
+            return await receive()
 
         try:
             await self.app(scope, replay_receive, send)

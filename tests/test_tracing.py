@@ -8,6 +8,7 @@ captures every span emitted by `mcp.<tool_name>`.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from typing import Any
 
@@ -294,3 +295,67 @@ async def test_trace_context_middleware_passthrough_non_http(
     scope = {"type": "websocket", "path": "/ws"}
     await mw(scope, _body_receive(b""), None)
     assert called == [True]
+
+
+@pytest.mark.asyncio
+async def test_trace_context_middleware_second_receive_does_not_force_disconnect(
+    reset_exporter: InMemorySpanExporter,
+):
+    """Regression: after the buffered body is replayed once, subsequent
+    ``receive()`` calls by the downstream app must NOT return an immediate
+    ``http.disconnect`` — they must delegate to the underlying receive callable.
+
+    FastMCP's streamable_http transport calls ``receive()`` a second time inside
+    its response handler to detect client disconnects mid-stream. The original
+    implementation hard-returned ``{"type": "http.disconnect"}`` on the second
+    call, causing FastMCP to abort the response before sending the final body
+    chunk. Uvicorn then logged ``ASGI callable returned without completing
+    response`` and Fly's proxy reported ``could not finish reading HTTP body
+    from instance``. Symptom: every MCP POST returned 200 but no body, so
+    Anthropic's Managed Agents saw ``MCP server 'x' initialize failed: protocol
+    error`` and aborted the session.
+    """
+    received_messages: list[dict[str, Any]] = []
+
+    # Simulate a real ASGI server: first receive yields the body, second
+    # receive blocks until cancelled (we never disconnect mid-test). The
+    # middleware must delegate to this for the second call, not short-circuit
+    # to http.disconnect.
+    body_yielded = False
+    disconnect_event = asyncio.Event()  # never set in this test
+
+    async def real_receive() -> dict[str, Any]:
+        nonlocal body_yielded
+        if not body_yielded:
+            body_yielded = True
+            return {"type": "http.request", "body": b"{}", "more_body": False}
+        # Block until disconnect fires (it never does in this test) — this is
+        # how a real ASGI server behaves after the body is drained.
+        await disconnect_event.wait()
+        return {"type": "http.disconnect"}
+
+    async def inner_app(scope: Any, receive: Any, send: Any) -> None:
+        # First call: get the body.
+        msg1 = await receive()
+        received_messages.append(msg1)
+        # Second call: would block in real life; we wrap in wait_for so the
+        # test fails fast if the middleware short-circuits to http.disconnect.
+        try:
+            msg2 = await asyncio.wait_for(receive(), timeout=0.1)
+            received_messages.append(msg2)
+        except asyncio.TimeoutError:
+            received_messages.append({"type": "blocked"})
+
+    mw = TraceContextMiddleware(inner_app)
+    scope = _make_asgi_scope()
+    await mw(scope, real_receive, None)
+
+    assert received_messages[0]["type"] == "http.request"
+    assert received_messages[0]["body"] == b"{}"
+    # CRITICAL: second receive must NOT be a synthetic http.disconnect.
+    # It must be "blocked" (delegated to real receive, which blocks).
+    assert received_messages[1]["type"] == "blocked", (
+        "TraceContextMiddleware must delegate second receive() to the real "
+        "receive callable so downstream apps see real disconnect events, not "
+        "a synthetic immediate disconnect. Got: %r" % received_messages[1]
+    )
