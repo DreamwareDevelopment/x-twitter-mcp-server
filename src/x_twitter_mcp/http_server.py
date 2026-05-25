@@ -10,7 +10,7 @@ from starlette.middleware.cors import CORSMiddleware
 from .server import server
 from .middleware import SmitheryConfigMiddleware
 from .path_token_middleware import from_env as path_token_from_env
-from .tracing import shutdown_tracer_provider
+from .tracing import TraceContextMiddleware, shutdown_tracer_provider
 
 
 def _create_asgi_app() -> Any:
@@ -47,6 +47,11 @@ def _create_asgi_app() -> Any:
         expose_headers=["mcp-session-id", "mcp-protocol-version"],
         max_age=86400,
     )
+
+    # Restore OTel parent context from params._meta._otel_traceparent (JSON
+    # body) or W3C traceparent header before FastMCP strips _meta from
+    # MiddlewareContext (FastMCP 3.3.1 server.py:955).
+    app = TraceContextMiddleware(app)
 
     # Inject Smithery config-per-request and map to env vars used by Tweepy setup
     app = SmitheryConfigMiddleware(app)

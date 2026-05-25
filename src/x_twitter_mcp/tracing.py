@@ -20,6 +20,7 @@ custom context manager registration is required. The OTel SDK's
 
 from __future__ import annotations
 
+import json as _json
 import logging
 import os
 import re
@@ -231,10 +232,87 @@ def get_tracer() -> trace.Tracer:
     return trace.get_tracer(TRACER_NAME)
 
 
+class TraceContextMiddleware:
+    """ASGI middleware that restores an OTel parent context from the MCP JSON
+    request body or the W3C ``traceparent`` HTTP header before FastMCP sees it.
+
+    FastMCP 3.3.1 strips ``params._meta`` in its middleware layer (server.py
+    line 955: CallToolRequestParams is reconstructed without _meta), so the
+    only reliable injection point is the raw HTTP body, before FastMCP parses
+    it.
+
+    Priority:
+      1. ``params._meta._otel_traceparent`` in JSON body (Worker injection)
+      2. W3C ``traceparent`` HTTP request header (standard propagation)
+      3. Active context — span becomes a synthetic root, no error
+    """
+
+    def __init__(self, app: Any) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+
+        # Buffer the full request body once so we can inspect it AND replay
+        # it for FastMCP, which reads it a second time over the ASGI channel.
+        chunks: list[bytes] = []
+        while True:
+            msg = await receive()
+            chunks.append(msg.get("body", b""))
+            if not msg.get("more_body", False):
+                break
+        body = b"".join(chunks)
+
+        traceparent: str | None = None
+
+        # Try JSON body first (MCP injection by the bridge Worker).
+        try:
+            if body:
+                payload = _json.loads(body)
+                if isinstance(payload, dict):
+                    params = payload.get("params")
+                    if isinstance(params, dict):
+                        meta = params.get("_meta")
+                        if isinstance(meta, dict):
+                            tp = meta.get("_otel_traceparent")
+                            if isinstance(tp, str):
+                                traceparent = tp
+        except Exception:
+            pass
+
+        # Fall back to the W3C traceparent request header.
+        if traceparent is None:
+            for k, v in scope.get("headers", []):
+                if k.lower() == b"traceparent":
+                    traceparent = v.decode("ascii", errors="replace")
+                    break
+
+        parent_ctx = restore_parent_context(traceparent)
+        token = otel_context.attach(parent_ctx)
+
+        # Replay the buffered body to the downstream ASGI app.
+        replayed = False
+
+        async def replay_receive() -> dict[str, Any]:
+            nonlocal replayed
+            if not replayed:
+                replayed = True
+                return {"type": "http.request", "body": body, "more_body": False}
+            return {"type": "http.disconnect"}
+
+        try:
+            await self.app(scope, replay_receive, send)
+        finally:
+            otel_context.detach(token)
+
+
 class TracingMiddleware(Middleware):
     """FastMCP middleware that opens an ``mcp.<tool_name>`` span around each
-    ``tools/call`` and restores a parent traceparent if the caller injected
-    one into ``params._meta._otel_traceparent``.
+    ``tools/call``. Parent context is picked up from the active OTel context,
+    which ``TraceContextMiddleware`` sets at the HTTP layer by restoring the
+    traceparent injected into ``params._meta._otel_traceparent``.
     """
 
     # on_call_tool is invoked for `tools/call` requests; everything else
@@ -242,10 +320,8 @@ class TracingMiddleware(Middleware):
     async def on_call_tool(self, context: Any, call_next: Any) -> Any:
         params = getattr(context, "message", None)
         tool_name = getattr(params, "name", "unknown") if params is not None else "unknown"
-        meta = getattr(params, "meta", None) if params is not None else None
-        traceparent = extract_traceparent_from_meta(meta)
 
-        parent_ctx = restore_parent_context(traceparent)
+        parent_ctx = otel_context.get_current()
         tracer = get_tracer()
         span = tracer.start_span(
             f"mcp.{tool_name}",

@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import pytest
+from opentelemetry import context as otel_context
 from opentelemetry import trace
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
@@ -32,6 +33,7 @@ _PROVIDER.add_span_processor(SimpleSpanProcessor(_EXPORTER))
 trace.set_tracer_provider(_PROVIDER)
 
 from src.x_twitter_mcp.tracing import (  # noqa: E402  (must come after provider install)
+    TraceContextMiddleware,
     TracingMiddleware,
     extract_traceparent_from_meta,
     parse_traceparent,
@@ -165,12 +167,20 @@ async def test_on_call_tool_records_exception(reset_exporter: InMemorySpanExport
 @pytest.mark.asyncio
 async def test_on_call_tool_propagates_traceparent(reset_exporter: InMemorySpanExporter):
     middleware = TracingMiddleware()
-    ctx = _make_context("get_user_profile", traceparent=VALID_TRACEPARENT)
+    # TracingMiddleware now reads from otel_context.get_current(); the HTTP
+    # layer (TraceContextMiddleware) is responsible for attaching the parent.
+    ctx = _make_context("get_user_profile", traceparent=None)
 
     async def call_next(_: Any) -> Any:
         return None
 
-    await middleware.on_call_tool(ctx, call_next)
+    # Simulate what TraceContextMiddleware does at the HTTP layer.
+    parent_ctx = restore_parent_context(VALID_TRACEPARENT)
+    token = otel_context.attach(parent_ctx)
+    try:
+        await middleware.on_call_tool(ctx, call_next)
+    finally:
+        otel_context.detach(token)
 
     spans = reset_exporter.get_finished_spans()
     assert len(spans) == 1
@@ -180,3 +190,103 @@ async def test_on_call_tool_propagates_traceparent(reset_exporter: InMemorySpanE
     # Parent span ID matches the traceparent's span ID.
     assert span.parent is not None
     assert format(span.parent.span_id, "016x") == "b7ad6b7169203331"
+
+
+# ---------------------------------------------------------------------------
+# TraceContextMiddleware — ASGI-layer traceparent extraction
+# ---------------------------------------------------------------------------
+
+import json  # noqa: E402
+
+
+def _make_asgi_scope(headers: list[tuple[bytes, bytes]] | None = None) -> dict:
+    return {
+        "type": "http",
+        "method": "POST",
+        "path": "/mcp",
+        "headers": headers or [],
+        "query_string": b"",
+    }
+
+
+def _body_receive(body: bytes):
+    """Return an async receive callable that yields the given body once."""
+    consumed = False
+
+    async def receive():
+        nonlocal consumed
+        if not consumed:
+            consumed = True
+            return {"type": "http.request", "body": body, "more_body": False}
+        return {"type": "http.disconnect"}
+
+    return receive
+
+
+@pytest.mark.asyncio
+async def test_trace_context_middleware_extracts_from_body(
+    reset_exporter: InMemorySpanExporter,
+):
+    """TraceContextMiddleware restores parent context from JSON body _meta."""
+    captured_ctx: list[Any] = []
+
+    async def inner_app(scope: Any, receive: Any, send: Any) -> None:
+        captured_ctx.append(otel_context.get_current())
+        # Consume the replayed body to confirm it is intact.
+        msg = await receive()
+        assert msg["body"] != b""
+
+    mw = TraceContextMiddleware(inner_app)
+    payload = {
+        "method": "tools/call",
+        "params": {
+            "name": "search_twitter",
+            "arguments": {},
+            "_meta": {"_otel_traceparent": VALID_TRACEPARENT},
+        },
+    }
+    body = json.dumps(payload).encode()
+    scope = _make_asgi_scope()
+    await mw(scope, _body_receive(body), None)
+
+    assert len(captured_ctx) == 1
+    span_ctx = trace.get_current_span(captured_ctx[0]).get_span_context()
+    assert format(span_ctx.trace_id, "032x") == "0af7651916cd43dd8448eb211c80319c"
+    assert format(span_ctx.span_id, "016x") == "b7ad6b7169203331"
+
+
+@pytest.mark.asyncio
+async def test_trace_context_middleware_extracts_from_header(
+    reset_exporter: InMemorySpanExporter,
+):
+    """TraceContextMiddleware falls back to W3C traceparent header."""
+    captured_ctx: list[Any] = []
+
+    async def inner_app(scope: Any, receive: Any, send: Any) -> None:
+        captured_ctx.append(otel_context.get_current())
+
+    mw = TraceContextMiddleware(inner_app)
+    scope = _make_asgi_scope(
+        headers=[(b"traceparent", VALID_TRACEPARENT.encode())]
+    )
+    await mw(scope, _body_receive(b"{}"), None)
+
+    assert len(captured_ctx) == 1
+    span_ctx = trace.get_current_span(captured_ctx[0]).get_span_context()
+    assert format(span_ctx.trace_id, "032x") == "0af7651916cd43dd8448eb211c80319c"
+
+
+@pytest.mark.asyncio
+async def test_trace_context_middleware_passthrough_non_http(
+    reset_exporter: InMemorySpanExporter,
+):
+    """Non-HTTP scopes pass through without errors or OTel side effects."""
+    called: list[bool] = []
+
+    async def inner_app(scope: Any, receive: Any, send: Any) -> None:
+        called.append(True)
+
+    mw = TraceContextMiddleware(inner_app)
+    scope = {"type": "websocket", "path": "/ws"}
+    await mw(scope, _body_receive(b""), None)
+    assert called == [True]
