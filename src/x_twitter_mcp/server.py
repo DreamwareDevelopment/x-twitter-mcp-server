@@ -10,6 +10,7 @@ from typing import List, Dict, Optional
 from dotenv import load_dotenv
 
 from . import oauth2_refresh
+from .tracing import TracingMiddleware, init_tracer_provider
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -20,8 +21,21 @@ warnings.filterwarnings("ignore", category=SyntaxWarning)
 # Load environment variables from .env file (if present)
 load_dotenv()
 
+# Initialize the OpenTelemetry tracer provider before the FastMCP server so
+# its tools-call dispatch has a registered tracer to ask for. When the OTLP
+# env vars are unset the provider falls into no-op mode — safe to leave on
+# in all environments (stdio mode, http mode, tests).
+init_tracer_provider()
+
 # Initialize FastMCP server
 server = FastMCP(name="TwitterMCPServer")
+
+# Plan E.x Task 7B / Pattern B — wrap every tools/call in an
+# `mcp.<tool_name>` span. The middleware also restores a parent traceparent
+# from `params._meta._otel_traceparent` so the spans nest under the caller's
+# trace when one is supplied (orphan-rooted under service.name=x-mcp
+# otherwise — still groupable in Phoenix).
+server.add_middleware(TracingMiddleware())
 
 # Twitter API client setup (lazy-loaded)
 _twitter_client = None

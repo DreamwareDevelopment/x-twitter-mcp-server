@@ -152,6 +152,29 @@ Notes:
 - A `POST /` will return 404; use `/mcp` for Streamable HTTP and `/sse` for SSE.
 - When deployed via Smithery, `smithery.yaml` is configured for `runtime: container` and `startCommand.type: http`.
 
+#### Tracing — Fly.io secret rotation
+
+When deploying to Fly with Phoenix Cloud as the tracing backend, set the OTel
+secrets. Phoenix Cloud's auth contract is `authorization: Bearer
+<PHOENIX_API_KEY>` (NOT `api_key=…`) and the wire format is
+OTLP-over-protobuf (JSON returns HTTP 415):
+
+```bash
+fly secrets set \
+  OTEL_EXPORTER_OTLP_ENDPOINT="https://app.phoenix.arize.com/s/<space>/v1/traces" \
+  OTEL_EXPORTER_OTLP_HEADERS="authorization=Bearer <PHOENIX_API_KEY>,x-project-name=<project>" \
+  ENVIRONMENT=production \
+  --app x-twitter-mcp
+```
+
+Spans land under `service.name=x-mcp`. Each MCP tool invocation emits an
+`mcp.<tool_name>` span (`mcp.search_twitter`, `mcp.post_tweet`,
+`mcp.get_user_profile`, etc.) with `mcp.tool_name` + `gen_ai.system=x-twitter`
+attributes. If the MCP request carries a `_meta._otel_traceparent` field, the
+tool span nests under that caller's trace; otherwise the span is a synthetic
+root grouped by `service.name`. Skip these vars and the server boots in
+spans-dropped mode — useful for local dev.
+
 ### Streamable HTTP (Local, no Docker)
 Run the ASGI server directly.
 
