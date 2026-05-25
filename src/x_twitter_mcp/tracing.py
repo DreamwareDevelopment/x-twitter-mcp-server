@@ -25,6 +25,7 @@ import os
 import re
 from typing import Any
 
+from fastmcp.server.middleware import Middleware
 from opentelemetry import context as otel_context
 from opentelemetry import trace
 from opentelemetry.context import Context
@@ -230,32 +231,14 @@ def get_tracer() -> trace.Tracer:
     return trace.get_tracer(TRACER_NAME)
 
 
-class TracingMiddleware:
+class TracingMiddleware(Middleware):
     """FastMCP middleware that opens an ``mcp.<tool_name>`` span around each
     ``tools/call`` and restores a parent traceparent if the caller injected
     one into ``params._meta._otel_traceparent``.
-
-    The class is duck-typed against ``fastmcp.server.middleware.Middleware``
-    rather than subclassing it, so this module stays import-safe even when
-    FastMCP's middleware API shifts between minor versions (the surface we
-    use is ``on_call_tool(context, call_next)`` plus ``__call__`` dispatch).
     """
 
-    def __init__(self) -> None:
-        # Import here to defer the FastMCP dep — keeps `import tracing` cheap
-        # for tests that just want parse_traceparent.
-        from fastmcp.server.middleware import Middleware  # noqa: F401  (typecheck only)
-
-    async def __call__(self, context: Any, call_next: Any) -> Any:
-        # Delegate to FastMCP's built-in dispatch (which routes to on_call_tool
-        # for tools/call, on_request for others) by mirroring the parent class
-        # behaviour. We override only on_call_tool below.
-        from fastmcp.server.middleware import Middleware
-
-        return await Middleware.__call__(self, context, call_next)  # type: ignore[arg-type]
-
-    # The parent class's __call__ delegates by method name. on_call_tool is
-    # invoked for `tools/call` requests; everything else passes through.
+    # on_call_tool is invoked for `tools/call` requests; everything else
+    # passes through via the Middleware base class dispatch.
     async def on_call_tool(self, context: Any, call_next: Any) -> Any:
         params = getattr(context, "message", None)
         tool_name = getattr(params, "name", "unknown") if params is not None else "unknown"
