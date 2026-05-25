@@ -60,6 +60,24 @@ def _parse_otlp_headers(raw: str) -> dict[str, str]:
     return out
 
 
+def _parse_resource_attrs(raw: str | None) -> dict[str, str]:
+    """Parse the OTel-standard OTEL_RESOURCE_ATTRIBUTES env var.
+
+    Format: comma-separated ``key=value`` pairs. We mirror
+    ``_parse_otlp_headers`` (first-``=`` split) so values containing ``=``
+    survive unmangled.
+    """
+    if not raw:
+        return {}
+    out: dict[str, str] = {}
+    for pair in raw.split(","):
+        if not pair.strip():
+            continue
+        key, _, value = pair.partition("=")
+        out[key.strip()] = value.strip()
+    return out
+
+
 def init_tracer_provider() -> TracerProvider:
     """Idempotent tracer-provider init.
 
@@ -78,13 +96,22 @@ def init_tracer_provider() -> TracerProvider:
     headers = os.environ.get("OTEL_EXPORTER_OTLP_HEADERS")
     environment = os.environ.get("ENVIRONMENT", "unknown")
 
-    resource = Resource.create(
-        {
-            "service.name": SERVICE_NAME,
-            "service.version": SERVICE_VERSION,
-            "deployment.environment": environment,
-        }
-    )
+    # Resource precedence: hardcoded defaults → OTEL_RESOURCE_ATTRIBUTES →
+    # OTEL_SERVICE_NAME (highest). Reading env vars manually rather than
+    # relying on Resource.create's detector aggregation because the SDK's
+    # detector merge inverts what we want: passing attrs to Resource.create
+    # makes them override env, but operators set env to override code defaults.
+    attrs: dict[str, str] = {
+        "service.name": SERVICE_NAME,
+        "service.version": SERVICE_VERSION,
+        "deployment.environment": environment,
+    }
+    attrs.update(_parse_resource_attrs(os.environ.get("OTEL_RESOURCE_ATTRIBUTES")))
+    env_service_name = os.environ.get("OTEL_SERVICE_NAME")
+    if env_service_name:
+        attrs["service.name"] = env_service_name
+
+    resource = Resource(attrs)
 
     if not endpoint or not headers:
         logger.warning(
