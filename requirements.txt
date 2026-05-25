@@ -1,3 +1,9 @@
 fastmcp>=2.2.2
 python-dotenv>=0.21.0
 tweepy>=4.15.0
+# Plan E.x Task 7B / Pattern B — OpenTelemetry export to Phoenix Cloud.
+# OTLP-over-protobuf is mandatory; Phoenix Cloud's CF edge rejects JSON
+# with HTTP 415 (verified on the bridge during Plan E Task 0).
+opentelemetry-api>=1.42.0
+opentelemetry-sdk>=1.42.0
+opentelemetry-exporter-otlp-proto-http>=1.42.0

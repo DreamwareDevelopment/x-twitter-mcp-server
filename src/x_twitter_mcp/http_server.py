@@ -1,4 +1,7 @@
+import atexit
 import os
+import signal
+import sys
 from typing import Any, Callable, Optional
 
 import uvicorn
@@ -7,6 +10,7 @@ from starlette.middleware.cors import CORSMiddleware
 from .server import server
 from .middleware import SmitheryConfigMiddleware
 from .path_token_middleware import from_env as path_token_from_env
+from .tracing import shutdown_tracer_provider
 
 
 def _create_asgi_app() -> Any:
@@ -57,11 +61,25 @@ def _create_asgi_app() -> Any:
 app = _create_asgi_app()
 
 
+def _on_shutdown(*_args: Any) -> None:
+    """Graceful drain — flush in-flight OTel spans before Fly sends SIGKILL.
+
+    Fly's `kill_signal = SIGINT` + `kill_timeout = 5s` gives us a 5s window
+    after SIGINT to land spans in Phoenix. uvicorn's own signal handlers run
+    first and start the graceful shutdown; this hook fires from atexit at
+    the very end of the process lifetime.
+    """
+    shutdown_tracer_provider()
+
+
 def main() -> None:
     """Run the ASGI server using Uvicorn.
 
     Smithery sets PORT; default to 8081 for local testing.
     """
+    atexit.register(_on_shutdown)
+    # Uvicorn installs its own SIGINT/SIGTERM handlers and exits cleanly;
+    # atexit catches every termination path (including SIGTERM via Fly).
     port = int(os.environ.get("PORT", 8081))
     uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
 
