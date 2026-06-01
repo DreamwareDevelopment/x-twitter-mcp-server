@@ -37,5 +37,18 @@ classifiers = [
 Homepage = "https://github.com/rafaljanicki/x-twitter-mcp-server"
 Issues = "https://github.com/rafaljanicki/x-twitter-mcp-server/issues"
 
+[project.optional-dependencies]
+# Test-only deps. pytest-asyncio is required by tests/test_tracing.py
+# (@pytest.mark.asyncio) but was previously undeclared, so a clean install
+# could not run the suite green. Declared here so CI is reproducible.
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.23",
+]
+
 [project.scripts]
 x-twitter-mcp-server = "x_twitter_mcp:server.run"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
