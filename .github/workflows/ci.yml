@@ -24,3 +24,16 @@ jobs:
       # secrets. The analog of `wrangler deploy --dry-run`: catches a broken
       # image / missing dependency before a manual `flyctl deploy`.
       - run: docker build -t x-twitter-mcp:ci .
+
+  # CD: deploy to Fly on push to main, only after test + docker-build pass.
+  # Skipped on PRs. --remote-only builds the image on Fly's builders.
+  deploy:
+    needs: [test, docker-build]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - run: flyctl deploy --remote-only
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
