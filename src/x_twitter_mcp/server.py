@@ -450,9 +450,14 @@ async def delete_all_bookmarks() -> Dict:
             break
     return {"status": "all bookmarks deleted", "deleted_count": deleted}
 
-@server.tool(name="get_bookmarks", description="Retrieves the authenticated user's bookmarked tweets. Requires Basic access tier or higher.")
-async def get_bookmarks(count: Optional[int] = 100, cursor: Optional[str] = None) -> List[Dict]:
-    """Fetches the authenticated user's bookmarked tweets.
+@server.tool(name="get_bookmarks", description="Retrieves the authenticated user's bookmarked tweets, newest-bookmarked first. Returns {bookmarks, next_cursor}; pass next_cursor back as `cursor` to page through older (historical) bookmarks. Requires Basic access tier or higher.")
+async def get_bookmarks(count: Optional[int] = 100, cursor: Optional[str] = None) -> Dict:
+    """Fetches a page of the authenticated user's bookmarked tweets.
+
+    Bookmarks come back ordered by when they were bookmarked (most recently
+    bookmarked first), so the first page is always the newest bookmarks.
+    Reaching historical bookmarks REQUIRES paging: take `next_cursor` from the
+    response and pass it back as `cursor` until `next_cursor` is null.
 
     Requires the OAuth 2.0 refresh flow to be configured:
     TWITTER_OAUTH2_USER_REFRESH_TOKEN (from a PKCE flow with bookmark.read,
@@ -464,7 +469,13 @@ async def get_bookmarks(count: Optional[int] = 100, cursor: Optional[str] = None
         count (Optional[int]): Number of bookmarks to retrieve per page.
             Default 100. Min 1, Max 100.
         cursor (Optional[str]): Pagination token for fetching the next page of
-            results (pass the next_token from a previous response's meta).
+            results (pass the `next_cursor` from a previous response).
+
+    Returns:
+        Dict with two keys:
+            - "bookmarks" (List[Dict]): the tweet objects on this page.
+            - "next_cursor" (Optional[str]): token for the next (older) page,
+              or None when this is the last page.
     """
     if not check_rate_limit("tweet_actions"):
         raise Exception("Tweet action rate limit exceeded")
@@ -484,7 +495,10 @@ async def get_bookmarks(count: Optional[int] = 100, cursor: Optional[str] = None
     if cursor:
         params["pagination_token"] = cursor
     data = _bookmarks_request("GET", session, params=params)
-    return data.get("data", [])
+    return {
+        "bookmarks": data.get("data", []),
+        "next_cursor": data.get("meta", {}).get("next_token"),
+    }
 
 # Timeline & Search Tools
 @server.tool(name="get_timeline", description="Get tweets from your home timeline (For You)")
