@@ -1,4 +1,4 @@
-fastmcp>=2.2.2
+fastmcp>=3.4,<4
 python-dotenv>=0.21.0
 tweepy>=4.15.0
 # Plan E.x Task 7B / Pattern B — OpenTelemetry export to Phoenix Cloud.
