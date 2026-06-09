@@ -14,7 +14,7 @@ authors = [
     { name = "Rafal Janicki", email = "rafal@kult.io" }
 ]
 dependencies = [
-    "fastmcp>=2.2.0",
+    "fastmcp>=3.4,<4",
     "tweepy>=4.15.0",
     "python-dotenv>=0.21.0",
     "uvicorn>=0.30.0",
