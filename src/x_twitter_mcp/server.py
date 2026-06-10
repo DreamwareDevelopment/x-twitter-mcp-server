@@ -431,7 +431,10 @@ async def delete_all_bookmarks() -> Dict:
     deleted = 0
     next_token = None
     while True:
-        params: dict = {"max_results": 100}
+        # 50, not 100: at max_results=100 the bookmarks endpoint omits
+        # meta.next_token mid-history (see get_bookmarks), which would end
+        # this loop with bookmarks still remaining.
+        params: dict = {"max_results": 50}
         if next_token:
             params["pagination_token"] = next_token
         data = _bookmarks_request("GET", session, params=params)
@@ -451,7 +454,7 @@ async def delete_all_bookmarks() -> Dict:
     return {"status": "all bookmarks deleted", "deleted_count": deleted}
 
 @server.tool(name="get_bookmarks", description="Retrieves the authenticated user's bookmarked tweets, newest-bookmarked first. Returns {bookmarks, next_cursor}; pass next_cursor back as `cursor` to page through older (historical) bookmarks. Requires Basic access tier or higher.")
-async def get_bookmarks(count: Optional[int] = 100, cursor: Optional[str] = None) -> Dict:
+async def get_bookmarks(count: Optional[int] = 50, cursor: Optional[str] = None) -> Dict:
     """Fetches a page of the authenticated user's bookmarked tweets.
 
     Bookmarks come back ordered by when they were bookmarked (most recently
@@ -467,7 +470,7 @@ async def get_bookmarks(count: Optional[int] = 100, cursor: Optional[str] = None
 
     Args:
         count (Optional[int]): Number of bookmarks to retrieve per page.
-            Default 100. Min 1, Max 100.
+            Default 50. Min 1, Max 50 — requests above 50 are clamped.
         cursor (Optional[str]): Pagination token for fetching the next page of
             results (pass the `next_cursor` from a previous response).
 
@@ -479,12 +482,16 @@ async def get_bookmarks(count: Optional[int] = 100, cursor: Optional[str] = None
     """
     if not check_rate_limit("tweet_actions"):
         raise Exception("Tweet action rate limit exceeded")
+    # max_results is clamped to 50, not the API's documented max of 100: at
+    # max_results=100 the bookmarks endpoint omits meta.next_token mid-history
+    # (observed 2026-06-10: 99 items + no token, while the same history paged
+    # fine at 50/page), which makes callers believe they reached the end.
     if count is None:
-        effective_count = 100
+        effective_count = 50
     elif count < 1:
         effective_count = 1
-    elif count > 100:
-        effective_count = 100
+    elif count > 50:
+        effective_count = 50
     else:
         effective_count = count
     session = _OAuth2Session()

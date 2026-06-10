@@ -75,3 +75,46 @@ async def test_get_bookmarks_forwards_cursor_as_pagination_token(server):
 
     assert captured["params"]["pagination_token"] == "CURSOR_PAGE_2"
     assert captured["params"]["max_results"] == 50
+
+
+@pytest.mark.asyncio
+async def test_get_bookmarks_clamps_count_to_50(server):
+    captured: dict[str, Any] = {}
+
+    def _fake_request(method, session, tweet_id=None, params=None):
+        captured["params"] = params
+        return {"data": [], "meta": {}}
+
+    with patch.object(server, "_bookmarks_request", side_effect=_fake_request):
+        await server.get_bookmarks(count=100)
+
+    assert captured["params"]["max_results"] == 50
+
+
+@pytest.mark.asyncio
+async def test_get_bookmarks_defaults_to_50(server):
+    captured: dict[str, Any] = {}
+
+    def _fake_request(method, session, tweet_id=None, params=None):
+        captured["params"] = params
+        return {"data": [], "meta": {}}
+
+    with patch.object(server, "_bookmarks_request", side_effect=_fake_request):
+        await server.get_bookmarks()
+
+    assert captured["params"]["max_results"] == 50
+
+
+@pytest.mark.asyncio
+async def test_delete_all_bookmarks_fetches_pages_of_50(server):
+    captured: dict[str, Any] = {}
+
+    def _fake_request(method, session, tweet_id=None, params=None):
+        if method == "GET":
+            captured["params"] = params
+        return {"data": [], "meta": {}}
+
+    with patch.object(server, "_bookmarks_request", side_effect=_fake_request):
+        await server.delete_all_bookmarks()
+
+    assert captured["params"]["max_results"] == 50
