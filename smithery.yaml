@@ -30,7 +30,7 @@ startCommand:
         description: Twitter Bearer Token
       twitterOauth2UserAccessToken:
         type: string
-        description: "OAuth 2.0 user access token (PKCE flow). Required for bookmark operations (get_bookmarks, delete_all_bookmarks). Obtain via tweepy.OAuth2UserHandler with bookmark.read, bookmark.write, and users.read scopes."
+        description: "OAuth 2.0 user access token (PKCE flow). Required for bookmark operations (get_bookmarks). Obtain via tweepy.OAuth2UserHandler with bookmark.read, bookmark.write, and users.read scopes."
   exampleConfig:
     twitterApiKey: ABC123KEY
     twitterApiSecret: DEF456SECRET

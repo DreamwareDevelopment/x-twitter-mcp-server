@@ -412,47 +412,6 @@ async def delete_bookmark(tweet_id: str) -> Dict:
     result = client.remove_bookmark(tweet_id=tweet_id)
     return {"tweet_id": tweet_id, "bookmarked": not result.data["bookmarked"]}
 
-@server.tool(name="delete_all_bookmarks", description="DESTRUCTIVE AND IRREVERSIBLE: Permanently deletes ALL bookmarks one by one. This cannot be undone. Always confirm explicitly with the user before calling this tool.")
-async def delete_all_bookmarks() -> Dict:
-    """Permanently deletes all of the authenticated user's bookmarks. IRREVERSIBLE.
-
-    WARNING: This action cannot be undone. Every bookmark will be permanently
-    removed. You MUST obtain explicit confirmation from the user before calling
-    this tool. Do not call this based on an ambiguous or casual request.
-
-    Simulated: Twitter API v2 has no bulk-delete endpoint, so bookmarks are
-    fetched page-by-page and deleted one by one.
-    """
-    if not check_rate_limit("tweet_actions"):
-        raise Exception("Tweet action rate limit exceeded")
-    # Twitter API v2 doesn't have a bulk-delete endpoint; fetch all pages and
-    # remove bookmarks one by one. Both fetch and delete require OAuth 2.0.
-    session = _OAuth2Session()
-    deleted = 0
-    next_token = None
-    while True:
-        # 50, not 100: at max_results=100 the bookmarks endpoint omits
-        # meta.next_token mid-history (see get_bookmarks), which would end
-        # this loop with bookmarks still remaining.
-        params: dict = {"max_results": 50}
-        if next_token:
-            params["pagination_token"] = next_token
-        data = _bookmarks_request("GET", session, params=params)
-        tweets = data.get("data", [])
-        if not tweets:
-            break
-        for tweet in tweets:
-            if not check_rate_limit("tweet_actions"):
-                raise Exception(
-                    f"Tweet action rate limit exceeded after deleting {deleted} bookmarks"
-                )
-            _bookmarks_request("DELETE", session, tweet_id=tweet["id"])
-            deleted += 1
-        next_token = data.get("meta", {}).get("next_token")
-        if not next_token:
-            break
-    return {"status": "all bookmarks deleted", "deleted_count": deleted}
-
 @server.tool(name="get_bookmarks", description="Retrieves the authenticated user's bookmarked tweets, newest-bookmarked first. Returns {bookmarks, next_cursor}; pass next_cursor back as `cursor` to page through older (historical) bookmarks. Requires Basic access tier or higher.")
 async def get_bookmarks(count: Optional[int] = 50, cursor: Optional[str] = None) -> Dict:
     """Fetches a page of the authenticated user's bookmarked tweets.
