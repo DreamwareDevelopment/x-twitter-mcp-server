@@ -79,7 +79,7 @@ If you prefer to install from the source repository:
       TWITTER_ACCESS_TOKEN_SECRET=your_access_token_secret
       TWITTER_BEARER_TOKEN=your_bearer_token
       ```
-    - To use bookmark tools (`get_bookmarks`, `delete_all_bookmarks`), also add an OAuth 2.0 user access token:
+    - To use the bookmark tool (`get_bookmarks`), also add an OAuth 2.0 user access token:
       ```
       TWITTER_OAUTH2_USER_ACCESS_TOKEN=your_oauth2_user_token
       ```
@@ -445,16 +445,8 @@ Below is a list of all tools provided by the `x-twitter-mcp` server, along with 
   ```
   Claude will remove the bookmark and confirm the action.
 
-#### `delete_all_bookmarks`
-- **Description**: DESTRUCTIVE AND IRREVERSIBLE. Permanently deletes ALL bookmarks by fetching every page and removing them one by one. Requires `TWITTER_OAUTH2_USER_ACCESS_TOKEN`.
-- **Claude Desktop Example**:
-  ```
-  Delete all my Twitter bookmarks.
-  ```
-  Claude will confirm with the user first, then delete all bookmarks and report the count.
-
 #### `get_bookmarks`
-- **Description**: Retrieves the authenticated user's bookmarked tweets. Returns up to 100 tweets per call; use the `cursor` parameter for pagination. Requires `TWITTER_OAUTH2_USER_ACCESS_TOKEN`.
+- **Description**: Retrieves the authenticated user's bookmarked tweets. Returns up to 50 tweets per call; use the `cursor` parameter for pagination. Requires `TWITTER_OAUTH2_USER_ACCESS_TOKEN`.
 - **Claude Desktop Example**:
   ```
   Show my Twitter bookmarks, limit to 25.
@@ -529,7 +521,7 @@ Below is a list of all tools provided by the `x-twitter-mcp` server, along with 
     - The server includes rate limit handling, but if you hit Twitter API limits, you may need to wait for the reset window (e.g., 15 minutes for tweet actions).
 
 - **Bookmark tools return 403**:
-    - `get_bookmarks` and `delete_all_bookmarks` require `TWITTER_OAUTH2_USER_ACCESS_TOKEN`. App-only bearer tokens and OAuth 1.0a are rejected by the bookmarks endpoint.
+    - `get_bookmarks` requires `TWITTER_OAUTH2_USER_ACCESS_TOKEN`. App-only bearer tokens and OAuth 1.0a are rejected by the bookmarks endpoint.
     - See [Obtaining an OAuth 2.0 User Token](#obtaining-an-oauth-20-user-token) for setup instructions.
 
 - **Syntax Warnings**:

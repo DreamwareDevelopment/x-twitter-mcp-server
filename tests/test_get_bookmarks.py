@@ -106,15 +106,11 @@ async def test_get_bookmarks_defaults_to_50(server):
 
 
 @pytest.mark.asyncio
-async def test_delete_all_bookmarks_fetches_pages_of_50(server):
-    captured: dict[str, Any] = {}
-
-    def _fake_request(method, session, tweet_id=None, params=None):
-        if method == "GET":
-            captured["params"] = params
-        return {"data": [], "meta": {}}
-
-    with patch.object(server, "_bookmarks_request", side_effect=_fake_request):
-        await server.delete_all_bookmarks()
-
-    assert captured["params"]["max_results"] == 50
+async def test_delete_all_bookmarks_tool_is_not_registered(server):
+    # The irreversible bulk-delete tool was removed intentionally: there is no
+    # use case for it here and exposing it lets a stray instruction wipe every
+    # bookmark. Assert it is gone from the registry while the single-tweet
+    # bookmark tools remain.
+    assert await server.server.get_tool("delete_all_bookmarks") is None
+    assert await server.server.get_tool("get_bookmarks") is not None
+    assert await server.server.get_tool("delete_bookmark") is not None
