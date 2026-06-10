@@ -8,6 +8,13 @@ primary_region = 'lax'
 kill_signal = 'SIGINT'
 kill_timeout = '5s'
 
+# FastMCP serves each request on a fresh transport (no in-memory MCP session
+# registry), so long-lived Managed-Agent sessions survive this machine's
+# scale-to-zero restarts. Without it, a session whose MCP connection predates a
+# restart gets 404/"session terminated" on every call after the machine sleeps.
+[env]
+  FASTMCP_STATELESS_HTTP = 'true'
+
 [build]
   dockerfile = 'Dockerfile'
 
