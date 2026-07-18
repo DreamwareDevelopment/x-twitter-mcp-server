@@ -27,7 +27,10 @@ class PathTokenMiddleware:
         https://<host>/<MCP_ACCESS_TOKEN>/mcp
 
     Requests without a matching first segment receive 401 Unauthorized
-    and never reach the underlying MCP server.
+    and never reach the underlying MCP server, with one exception: the
+    unauthenticated `/health` liveness probe (Dreamware P1a dw-prober +
+    UptimeRobot), which is exempted below since this middleware is the
+    outermost ASGI layer.
     """
 
     def __init__(self, app: Any, token: str) -> None:
@@ -45,6 +48,15 @@ class PathTokenMiddleware:
             return
 
         path = scope.get("path", "/")
+
+        # /health is an intentionally unauthenticated liveness probe (Dreamware
+        # P1a dw-prober + UptimeRobot poll it every 5 min). Must short-circuit
+        # before the token match below - otherwise "health" is just another
+        # failing token guess and gets the same 401 as everything else.
+        if path == "/health":
+            await self.app(scope, receive, send)
+            return
+
         parts = path.lstrip("/").split("/", 1)
         first_segment = parts[0] if parts else ""
 

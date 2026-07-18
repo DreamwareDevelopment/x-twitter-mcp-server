@@ -6,11 +6,27 @@ from typing import Any, Callable, Optional
 
 import uvicorn
 from starlette.middleware.cors import CORSMiddleware
+from starlette.requests import Request
+from starlette.responses import JSONResponse
 
 from .server import server
 from .middleware import SmitheryConfigMiddleware
 from .path_token_middleware import from_env as path_token_from_env
 from .tracing import TraceContextMiddleware, shutdown_tracer_provider
+
+
+@server.custom_route("/health", methods=["GET"])
+async def health(request: Request) -> JSONResponse:
+    """Unauthenticated liveness probe for the Dreamware uptime prober.
+
+    Registered via FastMCP's custom_route so it rides on the same ASGI
+    app as the MCP routes (/mcp, /sse) rather than needing a hand-built
+    Starlette route list. Polled every 5 min by dw-prober + UptimeRobot
+    (Dreamware P1a); must stay unauthenticated, so PathTokenMiddleware -
+    the outermost ASGI layer wrapped on below - carries a matching
+    early-return exemption for this exact path.
+    """
+    return JSONResponse({"ok": True, "service": "x-twitter-mcp"})
 
 
 def _create_asgi_app() -> Any:
