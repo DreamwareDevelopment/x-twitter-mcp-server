@@ -321,7 +321,10 @@ async def get_tweet_details(tweet_id: str) -> Dict:
         tweet_id (str): The ID of the tweet to fetch.
     """
     client, _ = initialize_twitter_clients()
-    tweet = client.get_tweet(id=tweet_id, tweet_fields=["id", "text", "created_at", "author_id"])
+    # Same field set as get_bookmarks: entities/note_tweet/article give
+    # consumers pre-resolved URLs, full long-post text, and X-Article
+    # metadata without a t.co hop (t.co 403s datacenter IPs).
+    tweet = client.get_tweet(id=tweet_id, tweet_fields=["id", "text", "created_at", "author_id", "entities", "note_tweet", "article"])
     return tweet.data.data if tweet.data else None
 
 @server.tool(name="create_poll_tweet", description="Create a tweet with a poll")
@@ -456,7 +459,11 @@ async def get_bookmarks(count: Optional[int] = 50, cursor: Optional[str] = None)
     session = _OAuth2Session()
     params: dict = {
         "max_results": effective_count,
-        "tweet.fields": "id,text,created_at,author_id",
+        # entities carries urls[].expanded_url / unwound_url (pre-resolved
+        # t.co destinations); note_tweet carries the full >280-char text plus
+        # its own entities; article carries X-Article metadata. Consumers must
+        # never need to resolve t.co themselves — t.co 403s datacenter IPs.
+        "tweet.fields": "id,text,created_at,author_id,entities,note_tweet,article",
     }
     if cursor:
         params["pagination_token"] = cursor
