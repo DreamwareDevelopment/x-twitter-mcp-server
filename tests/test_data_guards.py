@@ -199,7 +199,16 @@ async def test_favorite_tweet_missing_flag_is_a_tool_error(server, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_unfavorite_tweet_inverts_the_flag(server, monkeypatch):
+async def test_unfavorite_tweet_reads_the_flag_through_the_guard(server, monkeypatch):
+    """Pins the guard, NOT the inversion around it.
+
+    Twitter answers a successful unlike with `{"liked": false}` ("you no longer
+    like this"), and `unfavorite_tweet` negates it, so it reports `liked: true`
+    straight after removing the like. `delete_bookmark` inverts the same way.
+    That is a pre-existing bug, untouched by SEC-873 — this test records the
+    behaviour as it stands rather than endorsing it, and the inversion is filed
+    separately.
+    """
     _client(monkeypatch, server, unlike=lambda self, **kw: _Response(data={"liked": False}))
 
     assert await server.unfavorite_tweet(tweet_id="1") == {"tweet_id": "1", "liked": True}
