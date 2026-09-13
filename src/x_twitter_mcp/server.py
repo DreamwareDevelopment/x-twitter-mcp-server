@@ -3,6 +3,7 @@ import os
 import warnings
 import requests
 from fastmcp import FastMCP
+from fastmcp.exceptions import ToolError
 import tweepy
 from collections import defaultdict
 from datetime import datetime, timedelta
@@ -146,6 +147,97 @@ def _bookmarks_request(method: str, session: "_OAuth2Session",
     return resp.json()
 
 
+# Tweepy response guards (SEC-873)
+#
+# Tweepy hands back `Response(data, includes, errors, meta)` on success, and
+# Twitter answers 200-with-an-error-body often enough that `.data` is None on
+# perfectly ordinary inputs: a deleted or suspended tweet, a protected account,
+# a field the current access tier will not serve. Reading `.data` blind turns
+# those into an opaque AttributeError/TypeError raised several frames from the
+# cause, which is unactionable by the time it reaches an MCP client. Every
+# helper below fails with a `code=` marker instead, so a caller can classify
+# the failure rather than guess at it.
+
+def _error_detail(response) -> str:
+    """Render a Tweepy response's `errors` list into one readable clause."""
+    errors = getattr(response, "errors", None) or []
+    parts = []
+    for err in errors:
+        if isinstance(err, dict):
+            text = err.get("detail") or err.get("message") or err.get("title")
+            if text:
+                parts.append(str(text))
+        elif err:
+            parts.append(str(err))
+    return "; ".join(parts) if parts else "no detail supplied by Twitter"
+
+
+def _require_data(response, what: str):
+    """Return a Tweepy Response's `.data`, or raise a descriptive ToolError.
+
+    Raises rather than returning None: callers of the singular lookups ask for
+    one named object, and a bare null tells them nothing about whether it was
+    deleted, protected, or simply out of tier.
+    """
+    if response is None:
+        raise ToolError(f"{what}: Twitter returned no response [code=twitter_no_response]")
+    data = getattr(response, "data", None)
+    if data is None:
+        raise ToolError(
+            f"{what}: Twitter returned no data: {_error_detail(response)} "
+            "[code=twitter_no_data]"
+        )
+    return data
+
+
+def _payload(item, what: str) -> Dict:
+    """Return one result item's raw dict.
+
+    Tweepy normally models list items (`Tweet`, `User`), each carrying the raw
+    dict on `.data`. When the endpoint is called without a `data_type` — or
+    Tweepy declines to model an unfamiliar payload — the item arrives as a
+    plain dict instead, and `item.data` is the AttributeError this ticket is
+    named for. Accept both shapes.
+    """
+    inner = getattr(item, "data", None)
+    if isinstance(inner, dict):
+        return inner
+    if isinstance(item, dict):
+        return item
+    raise ToolError(
+        f"{what}: expected a Tweepy model or dict, got {type(item).__name__} "
+        "[code=twitter_malformed_item]"
+    )
+
+
+def _require_payload(response, what: str) -> Dict:
+    """Return a singular lookup's raw dict, erroring when Twitter sent none."""
+    return _payload(_require_data(response, what), what)
+
+
+def _payload_list(response, what: str) -> List[Dict]:
+    """Return a Tweepy list response as raw dicts; an empty page stays empty.
+
+    Unlike `_require_data`, a None `.data` here is a legitimate result — a
+    search that matched nothing, a timeline with no further pages — so it maps
+    to `[]` rather than an error.
+    """
+    if response is None:
+        raise ToolError(f"{what}: Twitter returned no response [code=twitter_no_response]")
+    return [_payload(item, what) for item in (getattr(response, "data", None) or [])]
+
+
+def _require_flag(response, key: str, what: str) -> bool:
+    """Return a mutation endpoint's boolean acknowledgement (`liked`, …)."""
+    data = _require_data(response, what)
+    if not isinstance(data, dict) or key not in data:
+        raise ToolError(
+            f"{what}: Twitter's response carried no '{key}' acknowledgement "
+            "[code=twitter_malformed_response]"
+        )
+    return data[key]
+
+
 # Rate limiting configuration
 RATE_LIMITS = {
     "tweet_actions": {"limit": 300, "window": timedelta(minutes=15)},
@@ -183,7 +275,7 @@ async def get_user_profile(user_id: str) -> Dict:
     """
     client, _ = initialize_twitter_clients()
     user = client.get_user(id=user_id, user_fields=["id", "name", "username", "profile_image_url", "description"])
-    return user.data.data if user.data else None
+    return _require_payload(user, "user lookup")
 
 @server.tool(name="get_user_by_screen_name", description="Fetches a user by screen name")
 async def get_user_by_screen_name(screen_name: str) -> Dict:
@@ -194,7 +286,7 @@ async def get_user_by_screen_name(screen_name: str) -> Dict:
     """
     client, _ = initialize_twitter_clients()
     user = client.get_user(username=screen_name, user_fields=["id", "name", "username", "profile_image_url", "description"])
-    return user.data.data if user.data else None
+    return _require_payload(user, "user lookup")
 
 @server.tool(name="get_user_by_id", description="Fetches a user by ID")
 async def get_user_by_id(user_id: str) -> Dict:
@@ -205,7 +297,7 @@ async def get_user_by_id(user_id: str) -> Dict:
     """
     client, _ = initialize_twitter_clients()
     user = client.get_user(id=user_id, user_fields=["id", "name", "username", "profile_image_url", "description"])
-    return user.data.data if user.data else None
+    return _require_payload(user, "user lookup")
 
 @server.tool(name="get_user_followers", description="Retrieves a list of followers for a given user")
 async def get_user_followers(user_id: str, count: Optional[int] = 100, cursor: Optional[str] = None) -> List[Dict]:
@@ -220,7 +312,7 @@ async def get_user_followers(user_id: str, count: Optional[int] = 100, cursor: O
         raise Exception("Follow action rate limit exceeded")
     client, _ = initialize_twitter_clients()
     followers = client.get_users_followers(id=user_id, max_results=count, pagination_token=cursor, user_fields=["id", "name", "username"])
-    return [user.data for user in (followers.data or [])]
+    return _payload_list(followers, "followers")
 
 @server.tool(name="get_user_following", description="Retrieves users the given user is following")
 async def get_user_following(user_id: str, count: Optional[int] = 100, cursor: Optional[str] = None) -> List[Dict]:
@@ -235,7 +327,7 @@ async def get_user_following(user_id: str, count: Optional[int] = 100, cursor: O
         raise Exception("Follow action rate limit exceeded")
     client, _ = initialize_twitter_clients()
     following = client.get_users_following(id=user_id, max_results=count, pagination_token=cursor, user_fields=["id", "name", "username"])
-    return [user.data for user in (following.data or [])]
+    return _payload_list(following, "following")
 
 @server.tool(name="get_user_followers_you_know", description="Retrieves a list of common followers (simulated)")
 async def get_user_followers_you_know(user_id: str, count: Optional[int] = 100, cursor: Optional[str] = None) -> List[Dict]:
@@ -251,7 +343,7 @@ async def get_user_followers_you_know(user_id: str, count: Optional[int] = 100, 
     client, _ = initialize_twitter_clients()
     # Simulate by fetching followers and filtering (v2 doesn't directly support mutual followers)
     followers = client.get_users_followers(id=user_id, max_results=count, pagination_token=cursor, user_fields=["id", "name", "username"])
-    return [user.data for user in (followers.data or [])][:count]
+    return _payload_list(followers, "followers")[:count]
 
 @server.tool(name="get_user_subscriptions", description="Retrieves a list of users to which the specified user is subscribed (uses following as proxy)")
 async def get_user_subscriptions(user_id: str, count: Optional[int] = 100, cursor: Optional[str] = None) -> List[Dict]:
@@ -267,7 +359,7 @@ async def get_user_subscriptions(user_id: str, count: Optional[int] = 100, curso
     client, _ = initialize_twitter_clients()
     # Use following as proxy for subscriptions
     subscriptions = client.get_users_following(id=user_id, max_results=count, pagination_token=cursor, user_fields=["id", "name", "username"])
-    return [user.data for user in (subscriptions.data or [])]
+    return _payload_list(subscriptions, "subscriptions")
 
 # Tweet Management Tools
 @server.tool(name="post_tweet", description="Post a tweet with optional media, reply, and tags")
@@ -296,9 +388,7 @@ async def post_tweet(text: str, media_paths: Optional[List[str]] = None, reply_t
         tweet_data["media_ids"] = media_ids
     tweet = client.create_tweet(**tweet_data)
     logger.info(f"Type of response from client.create_tweet: {type(tweet)}; Content: {tweet}")
-    if not tweet.data:
-        return None
-    return tweet.data
+    return _require_payload(tweet, "post_tweet")
 
 @server.tool(name="delete_tweet", description="Delete a tweet by its ID")
 async def delete_tweet(tweet_id: str) -> Dict:
@@ -311,7 +401,7 @@ async def delete_tweet(tweet_id: str) -> Dict:
         raise Exception("Tweet action rate limit exceeded")
     client, _ = initialize_twitter_clients()
     result = client.delete_tweet(id=tweet_id)
-    return {"id": tweet_id, "deleted": result.data["deleted"]}
+    return {"id": tweet_id, "deleted": _require_flag(result, "deleted", "delete_tweet")}
 
 @server.tool(name="get_tweet_details", description="Get detailed information about a specific tweet")
 async def get_tweet_details(tweet_id: str) -> Dict:
@@ -325,7 +415,7 @@ async def get_tweet_details(tweet_id: str) -> Dict:
     # consumers pre-resolved URLs, full long-post text, and X-Article
     # metadata without a t.co hop (t.co 403s datacenter IPs).
     tweet = client.get_tweet(id=tweet_id, tweet_fields=["id", "text", "created_at", "author_id", "entities", "note_tweet", "article"])
-    return tweet.data.data if tweet.data else None
+    return _require_payload(tweet, "tweet lookup")
 
 @server.tool(name="create_poll_tweet", description="Create a tweet with a poll")
 async def create_poll_tweet(text: str, choices: List[str], duration_minutes: int) -> Dict:
@@ -345,9 +435,7 @@ async def create_poll_tweet(text: str, choices: List[str], duration_minutes: int
         "poll_duration_minutes": duration_minutes
     }
     tweet = client.create_tweet(**poll_data)
-    if not tweet.data:
-        return None
-    return tweet.data
+    return _require_payload(tweet, "create_poll_tweet")
 
 @server.tool(name="vote_on_poll", description="Vote on a poll (mocked)")
 async def vote_on_poll(tweet_id: str, choice: str) -> Dict:
@@ -373,7 +461,7 @@ async def favorite_tweet(tweet_id: str) -> Dict:
         raise Exception("Like action rate limit exceeded")
     client, _ = initialize_twitter_clients()
     result = client.like(tweet_id=tweet_id)
-    return {"tweet_id": tweet_id, "liked": result.data["liked"]}
+    return {"tweet_id": tweet_id, "liked": _require_flag(result, "liked", "favorite_tweet")}
 
 @server.tool(name="unfavorite_tweet", description="Unfavorites a tweet")
 async def unfavorite_tweet(tweet_id: str) -> Dict:
@@ -386,7 +474,7 @@ async def unfavorite_tweet(tweet_id: str) -> Dict:
         raise Exception("Like action rate limit exceeded")
     client, _ = initialize_twitter_clients()
     result = client.unlike(tweet_id=tweet_id)
-    return {"tweet_id": tweet_id, "liked": not result.data["liked"]}
+    return {"tweet_id": tweet_id, "liked": not _require_flag(result, "liked", "unfavorite_tweet")}
 
 @server.tool(name="bookmark_tweet", description="Adds the tweet to bookmarks")
 async def bookmark_tweet(tweet_id: str, folder_id: Optional[str] = None) -> Dict:
@@ -400,7 +488,7 @@ async def bookmark_tweet(tweet_id: str, folder_id: Optional[str] = None) -> Dict
         raise Exception("Tweet action rate limit exceeded")
     client, _ = initialize_twitter_clients()
     result = client.bookmark(tweet_id=tweet_id)
-    return {"tweet_id": tweet_id, "bookmarked": result.data["bookmarked"]}
+    return {"tweet_id": tweet_id, "bookmarked": _require_flag(result, "bookmarked", "bookmark_tweet")}
 
 @server.tool(name="delete_bookmark", description="Removes the tweet from bookmarks")
 async def delete_bookmark(tweet_id: str) -> Dict:
@@ -413,7 +501,7 @@ async def delete_bookmark(tweet_id: str) -> Dict:
         raise Exception("Tweet action rate limit exceeded")
     client, _ = initialize_twitter_clients()
     result = client.remove_bookmark(tweet_id=tweet_id)
-    return {"tweet_id": tweet_id, "bookmarked": not result.data["bookmarked"]}
+    return {"tweet_id": tweet_id, "bookmarked": not _require_flag(result, "bookmarked", "delete_bookmark")}
 
 @server.tool(name="get_bookmarks", description="Retrieves the authenticated user's bookmarked tweets, newest-bookmarked first. Returns {bookmarks, next_cursor}; pass next_cursor back as `cursor` to page through older (historical) bookmarks. Requires Basic access tier or higher.")
 async def get_bookmarks(count: Optional[int] = 50, cursor: Optional[str] = None) -> Dict:
@@ -485,7 +573,7 @@ async def get_timeline(count: Optional[int] = 100, seen_tweet_ids: Optional[List
     """
     client, _ = initialize_twitter_clients()
     tweets = client.get_home_timeline(max_results=count, pagination_token=cursor, tweet_fields=["id", "text", "created_at"])
-    return [tweet.data for tweet in (tweets.data or [])]
+    return _payload_list(tweets, "tweets")
 
 @server.tool(name="get_latest_timeline", description="Get tweets from your home timeline (Following)")
 async def get_latest_timeline(count: Optional[int] = 100) -> List[Dict]:
@@ -496,7 +584,7 @@ async def get_latest_timeline(count: Optional[int] = 100) -> List[Dict]:
     """
     client, _ = initialize_twitter_clients()
     tweets = client.get_home_timeline(max_results=count, tweet_fields=["id", "text", "created_at"], exclude=["replies", "retweets"])
-    return [tweet.data for tweet in (tweets.data or [])]
+    return _payload_list(tweets, "tweets")
 
 @server.tool(name="search_twitter", description="Search Twitter with a query")
 async def search_twitter(query: str, product: Optional[str] = "Top", count: Optional[int] = 100, cursor: Optional[str] = None) -> List[Dict]:
@@ -524,7 +612,7 @@ async def search_twitter(query: str, product: Optional[str] = "Top", count: Opti
         
     client, _ = initialize_twitter_clients()
     tweets = client.search_recent_tweets(query=query, max_results=effective_count, sort_order=sort_order, next_token=cursor, tweet_fields=["id", "text", "created_at"])
-    return [tweet.data for tweet in (tweets.data or [])]
+    return _payload_list(tweets, "tweets")
 
 @server.tool(name="get_trends", description="Retrieves trending topics on Twitter")
 async def get_trends(category: Optional[str] = None, count: Optional[int] = 50) -> List[Dict]:
@@ -554,7 +642,7 @@ async def get_highlights_tweets(user_id: str, count: Optional[int] = 100, cursor
     client, _ = initialize_twitter_clients()
     # Twitter API v2 doesn't have highlights; use user timeline
     tweets = client.get_users_tweets(id=user_id, max_results=count, pagination_token=cursor, tweet_fields=["id", "text", "created_at"])
-    return [tweet.data for tweet in (tweets.data or [])]
+    return _payload_list(tweets, "tweets")
 
 @server.tool(name="get_user_mentions", description="Get tweets mentioning a specific user")
 async def get_user_mentions(user_id: str, count: Optional[int] = 100, cursor: Optional[str] = None) -> List[Dict]:
@@ -567,7 +655,7 @@ async def get_user_mentions(user_id: str, count: Optional[int] = 100, cursor: Op
     """
     client, _ = initialize_twitter_clients()
     mentions = client.get_users_mentions(id=user_id, max_results=count, pagination_token=cursor, tweet_fields=["id", "text", "created_at"])
-    return [tweet.data for tweet in (mentions.data or [])]
+    return _payload_list(mentions, "mentions")
 
 # Main server execution
 def run():

@@ -102,6 +102,12 @@ async def test_get_tweet_details_requests_link_entity_fields(server, monkeypatch
     monkeypatch.setattr(
         server, "initialize_twitter_clients", lambda: (_FakeClient(), None)
     )
-    await server.get_tweet_details(tweet_id="123")
+    # A None `.data` is now a descriptive ToolError rather than a bare null
+    # (SEC-873); the call still has to have requested the full field set on its
+    # way there, which is what this test is about.
+    from fastmcp.exceptions import ToolError
+
+    with pytest.raises(ToolError):
+        await server.get_tweet_details(tweet_id="123")
 
     assert EXPECTED_TWEET_FIELDS <= set(captured["tweet_fields"])
