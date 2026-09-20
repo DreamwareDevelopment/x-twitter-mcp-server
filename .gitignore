@@ -21,3 +21,6 @@ uv.lock
 .idea
 
 .DS_Store
+# Test selection data (pytest-testmon); also its -shm / -wal sidecars
+.testmondata
+.testmondata-*

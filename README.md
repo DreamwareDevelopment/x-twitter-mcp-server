@@ -309,6 +309,27 @@ You can now interact with Twitter using natural language in Claude Desktop. Here
 
 When prompted, grant Claude permission to use the MCP tools for the chat session.
 
+## Tests
+
+```bash
+pip install -e ".[dev]"
+python -m pytest --testmon   # default: only the tests whose covered code changed
+python -m pytest             # full suite, single process
+python -m pytest -n auto     # full suite spread over every core
+```
+
+The first `--testmon` run is a full run that builds `.testmondata` (gitignored,
+along with its `-shm` / `-wal` sidecars); after that it selects a subset. A
+change to `conftest.py` or a shared fixture correctly widens the next
+selection, so a full run is testmon working, not testmon failing. Two notes:
+testmon tracks coverage only for files inside the project tree, so install the
+package editable from this checkout (`pip install -e .`) or it selects nothing;
+and do not combine `--testmon` with `-n`, because the selection happens at
+collection and every xdist worker would write the data file. This suite is
+small enough that `-n auto` costs more in worker start-up than it saves
+(measured 0.85s single-process vs 2.28s at `-n auto`), which is why CI keeps
+running it single-process. See SEC-954.
+
 ## Available Tools
 
 Below is a list of all tools provided by the `x-twitter-mcp` server, along with example executions in Claude Desktop using natural language prompts.
